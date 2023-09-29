@@ -1,0 +1,4 @@
+/home/stive/.local/share/JetBrains/Toolbox/apps/CLion/ch-0/232.9559.58/bin/cmake/linux/x64/bin/cmake -DCMAKE_BUILD_TYPE=Debug -DCMAKE_MAKE_PROGRAM=/home/stive/.local/share/JetBrains/Toolbox/apps/CLion/ch-0/232.9559.58/bin/ninja/linux/x64/ninja -G Ninja -S /home/stive/CLionProjects/async -B /home/stive/CLionProjects/async/cmake-build-debug
+-- Configuring done (0.0s)
+-- Generating done (0.0s)
+-- Build files have been written to: /home/stive/CLionProjects/async/cmake-build-debug
