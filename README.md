@@ -1,48 +1,57 @@
-# Asynchronous Function Library
-This library provides a simple framework for asynchronous function execution in C. It allows functions to be executed concurrently and provides mechanisms for yielding execution, waiting for all asynchronous functions to complete, and awaiting specific asynchronous function results.
+# Stackful Coroutine Runtime in C
 
-## Features
-* `__await_func(func, arg)`: Initiates an asynchronous function call and waits for its completion, returning the result.
-* `__async_func(func, arg)`: Initiates an asynchronous function call without waiting for its completion.
-* `__async_yield()`: Yields the current asynchronous function's execution, allowing other tasks to proceed.
-* `__async_wait_all()`: Waits for all asynchronously initiated tasks to complete before returning.
+Built a stackful coroutine runtime in C with cooperative scheduling and manual context switching, enabling lightweight task execution without relying on OS threads.
 
-## Usage
-To use this library, include `async.h` in your C source files. Here's a brief overview of the provided macros:
+## Overview
 
-* `await_func(func, arg)`: Macro for `__await_func(func, arg)`.
-* `async_func(func, arg)`: Macro for `__async_func(func, arg)`.
-* `async_yield`: Macro for `__async_yield()`.
-* `async_wait_all`: Macro for `__async_wait_all()`.
+This project implements a small custom coroutine scheduler in pure C. Each coroutine runs on its own private stack and yields explicitly with `async_yield()`, allowing other coroutines to run in round-robin order.
+
+The runtime keeps execution cooperative: a coroutine continues running until it returns or calls `async_yield()`.
+
+## API
+
+* `async_func(func, arg)`: start a coroutine and continue without waiting for it.
+* `await_func(func, arg)`: start a coroutine, wait for it to finish, and return its result.
+* `async_yield()`: yield from the current coroutine to the scheduler.
+* `async_wait_all()`: run scheduled coroutines until all have completed.
+
 ## Example
-```c++
-#include "async.h"
-#include <stdio.h>
-#include <pthread.h>
 
-void *async_task(void *arg) {
-int *num = (int *)arg;
-printf("Async task started with argument: %d\n", *num);
-async_yield();  // Yield execution
-printf("Async task resumed with argument: %d\n", *num);
-return NULL;
+```c
+#include "async.h"
+
+#include <stdio.h>
+
+static void *task(void *arg) {
+    const char *name = arg;
+
+    printf("%s: start\n", name);
+    async_yield();
+    printf("%s: resumed\n", name);
+
+    return NULL;
 }
 
-int main() {
-int num = 10;
-
-    // Asynchronously execute async_task
-    async_func(async_task, &num);
-    
-    // Wait for all asynchronous tasks to complete
+int main(void) {
+    async_func(task, "first");
+    async_func(task, "second");
     async_wait_all();
-    
-    printf("All asynchronous tasks completed.\n");
-    
+
     return 0;
 }
 ```
+
+Example output:
+
+```text
+first: start
+second: start
+first: resumed
+second: resumed
+```
+
 ## Notes
-* This library utilizes POSIX threads (`pthread.h`) for managing asynchronous tasks.
-* Ensure proper synchronization and error handling in real-world applications.
-* Always include async.h and link with `-lpthread` when compiling.
+
+* No pthreads or OS worker threads are used.
+* Scheduling is cooperative, not preemptive.
+* The implementation uses separate coroutine stacks with `sigsetjmp` / `siglongjmp`.
