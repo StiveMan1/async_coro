@@ -1,17 +1,20 @@
+#define _GNU_SOURCE
+
 #include <stdio.h>
 #include <stdlib.h>
 #include <setjmp.h>
 #include <signal.h>
 #include <errno.h>
+#include <stdint.h>
 #include <string.h>
 #include "async.h"
 
 
 #define __ASYNC_FINISHED    0x1
 #define __ASYNC_DELETE      0x2
-#define __ASYNC_ENTERED     0x4
+#define __ASYNC_QUEUED      0x4
 
-#define handle_error() ({printf("Error %s\n", strerror(errno)); exit(-1);})
+#define handle_error() do { printf("Error %s\n", strerror(errno)); exit(-1); } while (0)
 
 /** Main coroutine structure, its context. */
 struct coro {
@@ -36,8 +39,8 @@ static struct coro coro_sched;
 static struct coro *coro_this_ptr = NULL;
 static struct coro *coro_list = NULL;
 static struct coro *coro_list_last = NULL;
+static struct coro *coro_delete_list = NULL;
 static sigjmp_buf start_point;
-int8_t is_waiting = 0;
 int8_t is_first = 1;
 
 
@@ -57,11 +60,16 @@ static void coro_list_add(struct coro *c) {
 }
 
 static void coro_list_delete(struct coro *c) {
+    if ((c->flag & __ASYNC_QUEUED) == 0)
+        return;
     struct coro *prev = c->prev, *next = c->next;
     if (prev != NULL) prev->next = next;
     else coro_list = next;
     if (next != NULL) next->prev = prev;
     else coro_list_last = prev;
+    c->next = NULL;
+    c->prev = NULL;
+    c->flag &= ~__ASYNC_QUEUED;
 }
 
 void coro_delete(struct coro *c) {
@@ -69,27 +77,28 @@ void coro_delete(struct coro *c) {
     free(c);
 }
 
+static void coro_reap_deleted(void) {
+    while (coro_delete_list != NULL) {
+        struct coro *c = coro_delete_list;
+        coro_delete_list = c->next;
+        coro_delete(c);
+    }
+}
+
 static void coro_yield_to(struct coro *to) {
     struct coro *from = coro_this_ptr;
-    int flag = (to->flag & __ASYNC_ENTERED);
-    to->flag |= __ASYNC_ENTERED;
+    if (to == NULL || to == from)
+        return;
 
     if (sigsetjmp(from->ctx, 0) == 0)
         siglongjmp(to->ctx, 1);
 
-    if (!flag) {
-        if ((to->flag & __ASYNC_FINISHED)) {
-            coro_list_delete(to);
-            if ((to->flag & __ASYNC_DELETE)) {
-                coro_delete(to);
-            }
-        } else
-            to->flag ^= __ASYNC_ENTERED;
-    }
     coro_this_ptr = from;
+    coro_reap_deleted();
 }
 
 static void coro_body(int signum) {
+    (void) signum;
     struct coro *c = coro_this_ptr;
     coro_this_ptr = NULL;
 
@@ -100,13 +109,24 @@ static void coro_body(int signum) {
     c->ret = c->func(c->func_arg);
 
     c->flag |= __ASYNC_FINISHED;
+    coro_list_delete(c);
+    if (c->flag & __ASYNC_DELETE) {
+        c->next = coro_delete_list;
+        coro_delete_list = c;
+    }
     siglongjmp(coro_sched.ctx, 1);
 }
 
 struct coro *coro_new(async_f func, void *func_arg, int8_t flag) {
     struct coro *c = (struct coro *) malloc(sizeof(*c));
+    if (c == NULL)
+        handle_error();
     c->ret = 0;
     c->stack = malloc(SIGSTKSZ);
+    if (c->stack == NULL) {
+        free(c);
+        handle_error();
+    }
     c->func = func;
     c->func_arg = func_arg;
     c->flag = flag;
@@ -168,6 +188,7 @@ struct coro *coro_new(async_f func, void *func_arg, int8_t flag) {
 
     /* Now scheduler can work with that coroutine. */
     coro_list_add(c);
+    c->flag |= __ASYNC_QUEUED;
     return c;
 }
 
@@ -175,7 +196,6 @@ struct coro *coro_new(async_f func, void *func_arg, int8_t flag) {
 void *__await_func(async_f func, void *func_arg) {
     if (is_first) coro_sched_init();
     struct coro *c = coro_new(func, func_arg, 0);
-    is_waiting = 1;
     while(!(c->flag & __ASYNC_FINISHED))
         async_yield();
 
@@ -191,7 +211,7 @@ void __async_func(async_f func, void *func_arg) {
 void __async_yield(void) {
     if (is_first) coro_sched_init();
     struct coro *from = coro_this_ptr;
-    struct coro *to = from->next;
+    struct coro *to = NULL;
 
     /*
      * Here we check that timer for current coroutine work more than one time_quant
@@ -199,16 +219,18 @@ void __async_yield(void) {
      * delta time - is the period of time witch this coroutine worked.
      */
 
-    if (to == NULL)
-        if (is_waiting)
-            coro_yield_to(coro_list);
-        else
-            coro_yield_to(&coro_sched);
-    else
-        coro_yield_to(to);
+    if (from == &coro_sched)
+        to = coro_list;
+    else if (from != NULL)
+        to = (from->next != NULL) ? from->next : coro_list;
+
+    if (to == from)
+        to = &coro_sched;
+    coro_yield_to(to);
 }
 void __async_wait_all(void) {
     if (is_first) coro_sched_init();
     while (coro_list != NULL)
         coro_yield_to(coro_list);
+    coro_reap_deleted();
 }
